@@ -1,0 +1,19 @@
+# Estende a imagem oficial que já traz TODAS as deps do IPED (Sleuth Kit com JNI, libyal, tesseract, mplayer, ImageMagick, etc.)
+FROM ipeddocker/iped:processor
+
+# Instala Node.js 20 (para rodar seu /app)
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends curl ca-certificates gnupg; \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -; \
+    apt-get install -y --no-install-recommends nodejs; \
+    rm -rf /var/lib/apt/lists/*
+
+# Ambiente
+ENV TZ=America/Sao_Paulo \
+    LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+    IPED_HOME=/root/IPED/iped \
+    IPED_JAR=/root/IPED/iped/iped.jar \
+    IPED_JAR_PATH=/root/IPED/iped/iped.jar
+
+WORKDIR /app

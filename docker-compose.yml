@@ -1,0 +1,135 @@
+version: "3.9"
+
+services:
+  iped-api-allinone:
+    build:
+      context: .
+      dockerfile: Dockerfile.iped-api
+    container_name: iped-api
+    restart: unless-stopped
+    environment:
+      TZ: America/Sao_Paulo
+
+      # --- IPED paths dentro da imagem ipeddocker ---
+      IPED_HOME: /root/IPED/iped
+      IPED_JAR: /root/IPED/iped/iped.jar
+      IPED_JAR_PATH: /root/IPED/iped/iped.jar
+
+      # --- JVM options: ajuste o tskJarPath se a versão do jar diferir na sua imagem ---
+      JAVA_OPTS: "-Xms4g -Xmx8g -DtskJarPath=/usr/local/share/java/sleuthkit-4.12.0.jar"
+
+      # --- Configurações IPED aplicadas no startup (edito conf/ via sed) ---
+      iped_locale: "pt-BR"
+      iped_numThreads: "8"               # ajuste ao nº de vCPUs
+      iped_enableOCR: "true"
+      iped_OCRLanguage: "por"            # "por+eng" se quiser
+      iped_phone_region: "BR"
+      iped_pluginFolder: "/mnt/plugins"
+      iped_hashesDB: "/mnt/hashesdb"
+      iped_indexTemp: "/mnt/ipedtmp"
+      iped_indexTempOnSSD: "true"
+      iped_outputOnSSD: "true"
+      iped_enableNamedEntityRecogniton: "false"   # true se montar config NER
+      iped_enableAudioTranscription: "false"      # true se montar Vosk
+      # Se quiser enviar pro Elastic/MinIO, habilite as flags abaixo e ajuste endpoints
+      iped_enableIndexToElasticSearch: "false"
+      iped_enableMinIO: "false"
+
+      # --- Variáveis do seu API (ajuste conforme seu código) ---
+      EVIDENCES_DIR: /evidences
+      OUTPUT_DIR: /output
+      PORT: "8000"
+      SCAN_INTERVAL_SEC: "60"
+      MAX_CONCURRENCY: "1"
+
+    # Volumes do HOST -> Container
+    volumes:
+      # Seu app Node:
+      - /servidor/iped/app:/app
+
+      # Evidências / saída / tmp (recomendado SSD p/ tmp):
+      - /servidor/iped/evidencias:/evidences
+      - /servidor/iped/saida:/output
+      - /servidor/iped/ipedtmp:/mnt/ipedtmp
+
+      # Plugins e bases de hash (opcionais mas “recomendado” se você quer tudo):
+      - /servidor/iped/plugins:/mnt/plugins
+      - /servidor/iped/hashesdb:/mnt/hashesdb
+
+      # Modelos de voz (se habilitar transcrição):
+      # mapeie o modelo Vosk pt-BR aqui, por exemplo:
+      # - /servidor/iped/vosk/pt-BR:/root/IPED/iped/models/vosk/pt-BR
+
+      # Config NER (se habilitar NER):
+      # - /servidor/iped/NER/YourNERConfig.txt:/root/IPED/iped/conf/NamedEntityRecognitionConfig.txt:ro
+
+    working_dir: /app
+
+    # No start: edita conf/ do IPED com as envs iped_*, checa Node/npm, instala deps e sobe seu app
+    command: >
+      bash -lc '
+        set -e
+
+        echo ">> Ajustando configs do IPED em $IPED_HOME/conf"
+        CONF_DIR="$IPED_HOME/conf"
+        test -d "$CONF_DIR" || { echo "ERRO: conf do IPED não encontrada em $CONF_DIR"; exit 1; }
+        CONFIGS="$CONF_DIR/IPEDConfig.txt $CONF_DIR/LocalConfig.txt"
+        set_prop() {
+          key="$1"; val="$2"
+          [ -z "${val:-}" ] && return 0
+          for f in $CONFIGS; do
+            if [ -f "$f" ]; then
+              if grep -q -E "^${key}=" "$f"; then
+                sed -i "s|^${key}=.*|${key}=${val}|" "$f"
+              else
+                printf "%s=%s\n" "$key" "$val" >> "$f"
+              fi
+            fi
+          done
+        }
+        set_prop locale                 "${iped_locale:-}"
+        set_prop numThreads             "${iped_numThreads:-}"
+        set_prop enableOCR              "${iped_enableOCR:-}"
+        set_prop OCR.language           "${iped_OCRLanguage:-}"
+        set_prop phone.region           "${iped_phone_region:-}"
+        set_prop pluginFolder           "${iped_pluginFolder:-}"
+        set_prop hashesDB               "${iped_hashesDB:-}"
+        set_prop indexTemp              "${iped_indexTemp:-}"
+        set_prop indexTempOnSSD         "${iped_indexTempOnSSD:-}"
+        set_prop outputOnSSD            "${iped_outputOnSSD:-}"
+        set_prop enableNamedEntityRecogniton "${iped_enableNamedEntityRecogniton:-}"
+        set_prop enableAudioTranscription    "${iped_enableAudioTranscription:-}"
+        set_prop enableIndexToElasticSearch  "${iped_enableIndexToElasticSearch:-}"
+        set_prop enableMinIO                "${iped_enableMinIO:-}"
+        # tskJarPath também existe nos conf, mas estamos passando via JAVA_OPTS; se quiser duplicar:
+        # set_prop tskJarPath             "/usr/local/share/java/sleuthkit-4.12.0.jar"
+
+        echo ">> Verificando IPED_JAR: $IPED_JAR"
+        test -s "$IPED_JAR"
+
+        echo ">> Node: $(node -v)  NPM: $(npm -v)"
+        test -f package.json || { echo "ERRO: /app/package.json não encontrado"; ls -lah; exit 1; }
+
+        echo ">> Instalando dependências do app"
+        npm install
+
+        echo ">> Build do app"
+        npm run build || true
+
+        echo ">> Subindo API"
+        node dist/index.js
+      '
+
+    ports:
+      - "8002:8000"
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
